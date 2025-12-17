@@ -11,6 +11,8 @@ export default function Home() {
   const [error, setError] = useState('')
 
   const handleImageUpload = async (file: File) => {
+    // Reset prior run state so a new upload always restarts the full flow
+    setExtractedText('')
     setStatus('uploading')
     setMessage('Uploading image...')
     setError('')
@@ -58,9 +60,13 @@ export default function Home() {
       setStatus('building')
       setMessage('Building and starting app...')
       
+      // Build app (guard with timeout so UI can't get stuck forever)
+      const controller = new AbortController()
+      const buildTimeout = window.setTimeout(() => controller.abort(), 180_000) // 3 minutes
       const buildResponse = await fetch('/api/build-app', {
         method: 'POST',
-      })
+        signal: controller.signal,
+      }).finally(() => window.clearTimeout(buildTimeout))
 
       if (!buildResponse.ok) {
         const errorData = await buildResponse.json().catch(() => ({}))
@@ -93,7 +99,11 @@ export default function Home() {
 
     } catch (err) {
       setStatus('error')
-      setError(err instanceof Error ? err.message : 'An unknown error occurred')
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setError('Build step timed out (3 minutes). The app may still be starting on http://localhost:3000 — check that URL and re-try if needed.')
+      } else {
+        setError(err instanceof Error ? err.message : 'An unknown error occurred')
+      }
       setMessage('')
     }
   }
@@ -125,7 +135,10 @@ export default function Home() {
         </div>
 
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-          <ImageUpload onUpload={handleImageUpload} disabled={status !== 'idle' && status !== 'error'} />
+          <ImageUpload
+            onUpload={handleImageUpload}
+            disabled={status === 'uploading' || status === 'extracting' || status === 'generating' || status === 'building'}
+          />
         </div>
 
         {extractedText && (

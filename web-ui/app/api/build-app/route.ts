@@ -202,6 +202,8 @@ export async function POST() {
     // Track consecutive 500 errors to detect compilation failures early
     let consecutive500Errors = 0
     const MAX_CONSECUTIVE_500 = 5 // If we get 5 consecutive 500s, likely a compilation error
+    const HEALTHCHECK_HOST = '127.0.0.1' // avoid IPv6 ::1 flakiness on some setups
+    const HEALTHCHECK_TIMEOUT_MS = 3000 // Next dev server can take >1s during initial compile
     
     // Wait up to 30 seconds for server to be ready
     for (let i = 0; i < 30; i++) {
@@ -210,24 +212,29 @@ export async function POST() {
       
       // Check if server is responding using http
       const serverStatus = await new Promise<{ ready: boolean; statusCode: number | null }>((resolve) => {
-        const req = http.request({
-          hostname: 'localhost',
-          port: 3000,
-          path: '/',
-          method: 'HEAD',
-          timeout: 1000
-        }, (res) => {
-          const statusCode = res.statusCode || 0
-          log(`Server responded with status code: ${statusCode}`)
-          resolve({ ready: statusCode >= 200 && statusCode < 500, statusCode })
-        })
+        const req = http.request(
+          {
+            hostname: HEALTHCHECK_HOST,
+            port: 3000,
+            path: '/',
+            method: 'GET',
+            timeout: HEALTHCHECK_TIMEOUT_MS,
+          },
+          (res) => {
+            const statusCode = res.statusCode || 0
+            // Drain response to avoid socket hang ups on keep-alive connections
+            res.resume()
+            log(`Server responded with status code: ${statusCode}`)
+            resolve({ ready: statusCode >= 200 && statusCode < 500, statusCode })
+          }
+        )
         
         req.on('error', (err) => {
           log(`Server check error: ${err.message}`)
           resolve({ ready: false, statusCode: null })
         })
         req.on('timeout', () => {
-          log('Server check timed out')
+          log(`Server check timed out after ${HEALTHCHECK_TIMEOUT_MS}ms`)
           req.destroy()
           resolve({ ready: false, statusCode: null })
         })
