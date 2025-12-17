@@ -101,8 +101,9 @@ export async function POST(request: NextRequest) {
 
     const cleanGeneratedAppBuildState = async (reason: string) => {
       log(`Cleaning generated-app build state due to: ${reason}`)
-      // Remove build output cache
+      // Remove build output caches
       await fs.promises.rm(path.join(appDir, '.next'), { recursive: true, force: true }).catch(() => {})
+      await fs.promises.rm(path.join(appDir, 'dist'), { recursive: true, force: true }).catch(() => {})
       // If install is corrupted, wipe node_modules (and lockfile if present to allow a full refresh)
       await fs.promises.rm(path.join(appDir, 'node_modules'), { recursive: true, force: true }).catch(() => {})
       await fs.promises.rm(path.join(appDir, 'package-lock.json'), { force: true }).catch(() => {})
@@ -174,9 +175,9 @@ export async function POST(request: NextRequest) {
     }
 
     const runCompileGate = async (): Promise<{ ok: boolean; output: string }> => {
-      // Always clear .next before next build to avoid stale/prior build artifacts affecting the run
-      await fs.promises.rm(path.join(appDir, '.next'), { recursive: true, force: true }).catch(() => {})
-      log('Running compile gate: npm run build (next build)...')
+      // Always clear build output before a build
+      await fs.promises.rm(path.join(appDir, 'dist'), { recursive: true, force: true }).catch(() => {})
+      log('Running compile gate: npm run build (vite build)...')
       const res = await runNpm(['run', 'build'], 'npm run build')
       return { ok: res.code === 0, output: res.output }
     }
@@ -205,7 +206,7 @@ export async function POST(request: NextRequest) {
       const importRe = /from\s+['"]([^'"]+)['"]/g
       const isBad = (spec: string) => {
         if (spec.startsWith('.') || spec.startsWith('@/')) return false
-        if (spec.startsWith('next/') || spec === 'next') return false
+        // No Next.js in Vite apps
         if (spec.startsWith('react') || spec.startsWith('tailwindcss')) return false
         // Packages (e.g. "zod") are fine; bad ones usually look like "components/..." or "app/..."
         // Treat any path-like (contains "/") as forbidden unless "@/..." or relative.
@@ -232,54 +233,41 @@ export async function POST(request: NextRequest) {
         return null
       }
 
-      if (fs.existsSync(path.join(appDir, 'pages'))) {
-        return await walk(path.join(appDir, 'pages'))
-      }
-      if (fs.existsSync(path.join(appDir, 'app'))) {
-        return await walk(path.join(appDir, 'app'))
+      if (fs.existsSync(path.join(appDir, 'src'))) {
+        return await walk(path.join(appDir, 'src'))
       }
       return null
     }
 
-    const findForbiddenNextDocumentUsage = async (): Promise<string | null> => {
-      // Pages Router mode:
-      // - next/document is allowed ONLY in pages/_document.(t|j)sx
-      // - <Html>/<Head>/<Main>/<NextScript> are allowed ONLY in pages/_document.(t|j)sx
-      const documentFiles = new Set([
-        path.join(appDir, 'pages', '_document.tsx'),
-        path.join(appDir, 'pages', '_document.jsx'),
-        path.join(appDir, 'pages', '_document.js'),
-        path.join(appDir, 'pages', '_document.ts'),
-      ])
-
+    const findForbiddenNextJsUsage = async (): Promise<string | null> => {
+      // Vite mode: Next.js should not appear at all.
       const forbiddenPatterns: Array<{ label: string; re: RegExp }> = [
-        { label: "import from 'next/document'", re: /from\s+['"]next\/document['"]/ },
-        { label: '<Html> usage', re: /<\s*Html\b/ },
-        { label: '<Head> usage (next/document)', re: /<\s*Head\b/ },
-        { label: '<Main> usage', re: /<\s*Main\b/ },
-        { label: '<NextScript> usage', re: /<\s*NextScript\b/ },
+        { label: "import from 'next/*'", re: /from\s+['"]next\// },
+        { label: "import from 'next'", re: /from\s+['"]next['"]/ },
+        { label: 'next/document usage', re: /next\/document/ },
+        { label: 'pages/ directory present', re: /.*/ },
+        { label: 'app/ directory present', re: /.*/ },
       ]
 
+      if (fs.existsSync(path.join(appDir, 'pages'))) return 'pages/ directory exists (Next.js Pages Router)'
+      if (fs.existsSync(path.join(appDir, 'app'))) return 'app/ directory exists (Next.js App Router)'
+
       const checkContent = (filePath: string, content: string): string | null => {
-        for (const p of forbiddenPatterns) {
-          if (p.re.test(content)) {
-            if (documentFiles.has(filePath)) return null
-            return `${p.label} found outside pages/_document in ${path.relative(appDir, filePath)}`
-          }
+        for (const p of forbiddenPatterns.slice(0, 3)) {
+          if (p.re.test(content)) return `${p.label} found in ${path.relative(appDir, filePath)}`
         }
         return null
       }
 
-      // Fallback: scan the appDir tree for next/document usage.
       const walk = async (dir: string): Promise<string | null> => {
         const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])
         for (const ent of entries) {
-          if (ent.name === 'node_modules' || ent.name === '.next') continue
+          if (ent.name === 'node_modules' || ent.name === '.next' || ent.name === 'dist') continue
           const full = path.join(dir, ent.name)
           if (ent.isDirectory()) {
             const found = await walk(full)
             if (found) return found
-          } else if (/\.(ts|tsx|js|jsx|mdx)$/.test(ent.name)) {
+          } else if (/\.(ts|tsx|js|jsx|mdx|html)$/.test(ent.name)) {
             const content = await fs.promises.readFile(full, 'utf-8').catch(() => '')
             const hit = checkContent(full, content)
             if (hit) return hit
@@ -342,23 +330,23 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      const forbidden = await findForbiddenNextDocumentUsage()
+      const forbidden = await findForbiddenNextJsUsage()
       if (forbidden) {
         log(`Forbidden Next.js usage detected before build: ${forbidden}`)
         if (attempt === MAX_REPAIR_ATTEMPTS) {
           return NextResponse.json(
             {
-              error: `Forbidden Next.js usage detected: ${forbidden}`,
+              error: `Forbidden Next.js usage detected (Vite apps must not include Next.js): ${forbidden}`,
               logs: logs.join('\n'),
               suggestion:
-                "Remove any use of next/document or <Html>/<Head>/<Main>/<NextScript>. This project uses App Router; only use lowercase <html>/<body> in app/layout.tsx.",
+                "This generator uses React + Vite. Remove Next.js entirely (no next/* imports, no pages/ or app/ directories).",
             },
             { status: 500 }
           )
         }
 
         const repaired = await maybeAutoRepair(
-          `FORBIDDEN NEXT.JS USAGE DETECTED: ${forbidden}\n\nThis project uses Next.js App Router (app/). You MUST remove all imports from 'next/document' and remove any usage of <Html>, <Head>, <Main>, <NextScript> components.\n\nFix the project and return the full corrected JSON with ALL required files.`
+          `FORBIDDEN NEXT.JS USAGE DETECTED: ${forbidden}\n\nThis project MUST be a React + Vite app. You MUST remove Next.js entirely: no next/* imports, and do not create pages/ or app/ directories. Output must include vite.config.ts, index.html, src/main.tsx, src/App.tsx, src/index.css, tailwind.config.js, postcss.config.js, tsconfig.json, and package.json.\n\nFix the project and return the full corrected JSON with ALL required files.`
         )
         if (!repaired) {
           return NextResponse.json(
@@ -466,9 +454,9 @@ export async function POST(request: NextRequest) {
       log(`Warning: Could not check/kill processes on port 3000: ${e.message}`)
     }
 
-    log('Starting Next.js dev server on port 3000...')
-    // Start dev server in background, explicitly on port 3000
-    const proc = spawn('npm', ['run', 'dev', '--', '-p', '3000'], {
+    log('Starting Vite dev server on port 3000...')
+    // Start dev server in background, explicitly on port 3000 (script should set this too)
+    const proc = spawn('npm', ['run', 'dev'], {
       cwd: appDir,
       stdio: 'pipe',
       detached: true,
@@ -485,7 +473,7 @@ export async function POST(request: NextRequest) {
       const text = data.toString()
       stdOutput += text
       log(`Dev server stdout: ${text.trim()}`)
-      if (text.includes('Ready') || text.includes('Local:') || text.includes('localhost:3000') || text.includes('started server')) {
+      if (text.includes('Local:') || text.includes('http://127.0.0.1:3000') || text.includes('localhost:3000')) {
         log('Server ready signal detected in stdout')
         serverReady = true
       }

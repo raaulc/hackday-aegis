@@ -32,8 +32,8 @@ export class AppBuilder {
     
     // Enhance the user prompt to emphasize full implementation
     const enhancedPrompt = errorContext 
-      ? `${userPrompt}\n\nError occurred:\n${errorContext}\n\nIMPORTANT: You must return ALL required files for a complete Next.js Pages Router app, including package.json, tsconfig.json, next.config.js, tailwind.config.js, postcss.config.js, pages/_app.tsx, pages/_document.tsx, pages/index.tsx, and styles/globals.css. Do not return partial files. Return the complete fixed project as a full JSON response with all files.`
-      : `Build a fully functional Next.js application with the following requirements:\n\n${userPrompt}\n\nIMPORTANT: 
+      ? `${userPrompt}\n\nError occurred:\n${errorContext}\n\nIMPORTANT: You must return ALL required files for a complete React (Vite) app, including package.json, tsconfig.json, vite.config.ts, tailwind.config.js, postcss.config.js, index.html, src/main.tsx, src/App.tsx, and src/index.css. Do not return partial files. Return the complete fixed project as a full JSON response with all files.`
+      : `Build a fully functional React application (Vite + React + TypeScript + Tailwind) with the following requirements:\n\n${userPrompt}\n\nIMPORTANT: 
 - Implement the COMPLETE functionality described above - make it ACTUALLY WORK
 - DO NOT create placeholder pages, "coming soon" messages, or mock/fake implementations
 - The app must be fully working and usable immediately - real functionality, not fake
