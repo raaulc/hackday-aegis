@@ -65,6 +65,8 @@ export default function Home() {
       const buildTimeout = window.setTimeout(() => controller.abort(), 180_000) // 3 minutes
       const buildResponse = await fetch('/api/build-app', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: text }),
         signal: controller.signal,
       }).finally(() => window.clearTimeout(buildTimeout))
 

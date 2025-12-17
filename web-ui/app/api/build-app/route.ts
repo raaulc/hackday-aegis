@@ -1,10 +1,11 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import http from 'http'
+import { AppBuilder } from '../../../lib/app-builder'
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   const logs: string[] = []
   const log = (message: string) => {
     const timestamp = new Date().toISOString()
@@ -15,6 +16,17 @@ export async function POST() {
 
   try {
     log('Starting build process...')
+
+    // Optional: prompt used for auto-repair when compile gate fails
+    let prompt: string | undefined
+    try {
+      const body = await request.json().catch(() => null)
+      if (body && typeof body.prompt === 'string') {
+        prompt = body.prompt
+      }
+    } catch {
+      // ignore
+    }
     
     // generated-app is in the parent directory (hackday/generated-app)
     const appDir = path.join(process.cwd(), '..', 'generated-app')
@@ -31,16 +43,9 @@ export async function POST() {
       )
     }
 
-    log('Running npm install...')
-    // Run npm install, with fallback to --legacy-peer-deps if needed
-    let installSucceeded = false
-    let installOutput = ''
-    
-    const runNpmInstall = async (useLegacyPeerDeps: boolean = false): Promise<void> => {
-      return new Promise<void>((resolve, reject) => {
-        const args = useLegacyPeerDeps ? ['install', '--legacy-peer-deps'] : ['install']
+    const runNpm = async (args: string[], label: string): Promise<{ code: number; output: string }> => {
+      return await new Promise((resolve) => {
         log(`Running: npm ${args.join(' ')}`)
-        
         const proc = spawn('npm', args, {
           cwd: appDir,
           stdio: 'pipe',
@@ -51,56 +56,100 @@ export async function POST() {
         proc.stdout?.on('data', (data) => {
           const text = data.toString()
           output += text
-          log(`npm install stdout: ${text.trim()}`)
+          log(`${label} stdout: ${text.trim()}`)
         })
 
         proc.stderr?.on('data', (data) => {
           const text = data.toString()
           output += text
-          log(`npm install stderr: ${text.trim()}`)
+          log(`${label} stderr: ${text.trim()}`)
         })
 
-        proc.on('close', (code) => {
-          if (code === 0) {
-            log(`npm install completed successfully${useLegacyPeerDeps ? ' (with --legacy-peer-deps)' : ''}`)
-            resolve()
-          } else {
-            log(`ERROR: npm install failed with exit code ${code}`)
-            log(`npm install output: ${output}`)
-            installOutput = output
-            reject(new Error(`npm install failed with code ${code}\n${output}`))
-          }
-        })
-
-        proc.on('error', (error) => {
-          log(`ERROR: Failed to spawn npm install process: ${error.message}`)
-          reject(error)
-        })
+        proc.on('close', (code) => resolve({ code: code ?? 1, output }))
+        proc.on('error', (error) => resolve({ code: 1, output: `${output}\n${label} spawn error: ${error.message}` }))
       })
     }
-    
-    // Try regular install first
-    try {
-      await runNpmInstall(false)
-      installSucceeded = true
-    } catch (error) {
-      log('Regular npm install failed, trying with --legacy-peer-deps...')
-      // If it failed with peer dependency issues, try with --legacy-peer-deps
-      if (installOutput.includes('ERESOLVE') || installOutput.includes('peer dependency')) {
-        try {
-          await runNpmInstall(true)
-          installSucceeded = true
-        } catch (legacyError) {
-          log('npm install with --legacy-peer-deps also failed')
-          throw legacyError
-        }
-      } else {
-        throw error
+
+    const runNpmInstallWithFallback = async (): Promise<void> => {
+      log('Running npm install...')
+      const first = await runNpm(['install'], 'npm install')
+      if (first.code === 0) {
+        log('npm install completed successfully')
+        return
       }
+
+      log('Regular npm install failed, trying with --legacy-peer-deps...')
+      const second = await runNpm(['install', '--legacy-peer-deps'], 'npm install --legacy-peer-deps')
+      if (second.code === 0) {
+        log('npm install completed successfully (with --legacy-peer-deps)')
+        return
+      }
+
+      throw new Error(`npm install failed.\n\n${second.output || first.output}`)
     }
-    
-    if (!installSucceeded) {
-      throw new Error('npm install failed with all methods')
+
+    const runCompileGate = async (): Promise<{ ok: boolean; output: string }> => {
+      log('Running compile gate: npm run build (next build)...')
+      const res = await runNpm(['run', 'build'], 'npm run build')
+      return { ok: res.code === 0, output: res.output }
+    }
+
+    const maybeAutoRepair = async (errorContext: string): Promise<boolean> => {
+      if (!prompt) return false
+      const apiKey = process.env.OPENAI_API_KEY
+      if (!apiKey) return false
+
+      const builder = new AppBuilder(apiKey)
+      log('Attempting auto-repair via OpenAI (compile gate failed)...')
+      const repaired = await builder.generateApp(prompt, errorContext)
+      await builder.writeFiles(repaired.files)
+      return true
+    }
+
+    // Install deps first (needed for build)
+    await runNpmInstallWithFallback()
+
+    // Strict compile gate with up to 2 auto-repair attempts
+    const MAX_REPAIR_ATTEMPTS = 2
+    for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
+      const buildRes = await runCompileGate()
+      if (buildRes.ok) {
+        log('Compile gate passed (next build succeeded)')
+        break
+      }
+
+      const attemptLabel = attempt === 0 ? 'initial build' : `repair attempt ${attempt}`
+      log(`Compile gate failed (${attemptLabel})`)
+
+      if (attempt === MAX_REPAIR_ATTEMPTS) {
+        return NextResponse.json(
+          {
+            error: 'Compile gate failed: next build did not succeed',
+            logs: logs.join('\n'),
+            stderr: buildRes.output,
+            suggestion: 'The generated app has a compile error. Try regenerating or inspect generated-app/app/page.tsx around the reported line.',
+          },
+          { status: 500 }
+        )
+      }
+
+      const repaired = await maybeAutoRepair(
+        `next build failed (attempt ${attempt + 1}/${MAX_REPAIR_ATTEMPTS}). Here is the full output:\n\n${buildRes.output}`
+      )
+      if (!repaired) {
+        // If we can't repair (missing prompt or API key), fail immediately
+        return NextResponse.json(
+          {
+            error: 'Compile gate failed and auto-repair was not possible (missing prompt or OPENAI_API_KEY)',
+            logs: logs.join('\n'),
+            stderr: buildRes.output,
+          },
+          { status: 500 }
+        )
+      }
+
+      // Dependencies may have changed during repair; reinstall then retry build
+      await runNpmInstallWithFallback()
     }
 
     // Check if port 3000 is already in use - kill any existing process (but not 3001 - that's the web UI)
