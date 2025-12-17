@@ -75,6 +75,13 @@ IMPLEMENTATION REQUIREMENTS:
 - Use Tailwind CSS for styling - make it look modern and functional
 - The app must be immediately usable when the user opens it in the browser
 
+CRITICAL AVATAR / IMAGE RULES (TO AVOID BROKEN IMAGES):
+- DO NOT use faker.image.avatar() or any avatar/image URL hosted on cdn.fakercloud.com (often blocked or flaky).
+- If the app needs profile pictures/avatars, generate them LOCALLY (no network dependency) using DiceBear:
+  - Add dependencies: "@dicebear/core" and "@dicebear/collection"
+  - Generate an SVG with createAvatar(...) and render it as a data URL: data:image/svg+xml;utf8,${encodeURIComponent(svg)}
+  - This MUST work offline and should never rely on remote image hosts.
+
 CRITICAL UI/UX REQUIREMENTS:
 - All interactive elements (buttons, forms, inputs) MUST be clearly visible in the UI
 - Follow proper user flow: User selects/inputs → User clicks button → Action executes → Result displayed
