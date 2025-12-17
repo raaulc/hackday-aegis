@@ -174,9 +174,65 @@ export async function POST(request: NextRequest) {
     }
 
     const runCompileGate = async (): Promise<{ ok: boolean; output: string }> => {
+      // Always clear .next before next build to avoid stale/prior build artifacts affecting the run
+      await fs.promises.rm(path.join(appDir, '.next'), { recursive: true, force: true }).catch(() => {})
       log('Running compile gate: npm run build (next build)...')
       const res = await runNpm(['run', 'build'], 'npm run build')
       return { ok: res.code === 0, output: res.output }
+    }
+
+    const enforceTsconfigBaseUrl = async () => {
+      const tsconfigPath = path.join(appDir, 'tsconfig.json')
+      if (!fs.existsSync(tsconfigPath)) return
+      try {
+        const raw = await fs.promises.readFile(tsconfigPath, 'utf-8')
+        const json = JSON.parse(raw)
+        json.compilerOptions = json.compilerOptions || {}
+        // Ensure baseUrl exists so "@/..." and non-relative checks behave predictably
+        if (!json.compilerOptions.baseUrl) {
+          json.compilerOptions.baseUrl = '.'
+          await fs.promises.writeFile(tsconfigPath, JSON.stringify(json, null, 2) + '\n', 'utf-8')
+          log('Patched tsconfig.json to include compilerOptions.baseUrl="."')
+          await fs.promises.rm(path.join(appDir, '.install.hash'), { force: true }).catch(() => {})
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const findForbiddenNonRelativeImports = async (): Promise<string | null> => {
+      // Disallow imports like "components/X" unless using the "@/..." alias.
+      const importRe = /from\s+['"]([^'"]+)['"]/g
+      const isBad = (spec: string) => {
+        if (spec.startsWith('.') || spec.startsWith('@/')) return false
+        if (spec.startsWith('next/') || spec === 'next') return false
+        if (spec.startsWith('react') || spec.startsWith('tailwindcss')) return false
+        // Packages (e.g. "zod") are fine; bad ones usually look like "components/..." or "app/..."
+        // Treat any path-like (contains "/") as forbidden unless "@/..." or relative.
+        return spec.includes('/')
+      }
+
+      const walk = async (dir: string): Promise<string | null> => {
+        const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])
+        for (const ent of entries) {
+          if (ent.name === 'node_modules' || ent.name === '.next') continue
+          const full = path.join(dir, ent.name)
+          if (ent.isDirectory()) {
+            const found = await walk(full)
+            if (found) return found
+          } else if (/\.(ts|tsx|js|jsx|mdx)$/.test(ent.name)) {
+            const content = await fs.promises.readFile(full, 'utf-8').catch(() => '')
+            let m: RegExpExecArray | null
+            while ((m = importRe.exec(content))) {
+              const spec = m[1]
+              if (isBad(spec)) return `Non-relative import "${spec}" found in ${path.relative(appDir, full)}`
+            }
+          }
+        }
+        return null
+      }
+
+      return await walk(path.join(appDir, 'app'))
     }
 
     const findForbiddenNextDocumentUsage = async (): Promise<string | null> => {
@@ -247,11 +303,44 @@ export async function POST(request: NextRequest) {
     }
 
     // Install deps first (needed for build)
+    await enforceTsconfigBaseUrl()
     await runNpmInstallWithFallback()
 
     // Strict compile gate with up to 2 auto-repair attempts
     const MAX_REPAIR_ATTEMPTS = 2
     for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
+      // Preflight: block non-relative, path-like imports that break TS builds
+      const badImport = await findForbiddenNonRelativeImports()
+      if (badImport) {
+        log(`Forbidden import style detected before build: ${badImport}`)
+        if (attempt === MAX_REPAIR_ATTEMPTS) {
+          return NextResponse.json(
+            {
+              error: `Forbidden import style detected: ${badImport}`,
+              logs: logs.join('\n'),
+              suggestion:
+                'Use only relative imports ("./", "../") or the alias "@/..." (requires tsconfig baseUrl). Do not use path-like imports like "components/X".',
+            },
+            { status: 500 }
+          )
+        }
+        const repaired = await maybeAutoRepair(
+          `FORBIDDEN IMPORT STYLE DETECTED: ${badImport}\n\nFix ALL imports. Allowed: relative ("./", "../") or alias "@/...". Do NOT use non-relative path-like imports such as "components/..." or "app/...". Return full corrected JSON with all required files.`
+        )
+        if (!repaired) {
+          return NextResponse.json(
+            {
+              error: 'Forbidden import style detected and auto-repair was not possible (missing prompt or OPENAI_API_KEY)',
+              logs: logs.join('\n'),
+            },
+            { status: 500 }
+          )
+        }
+        await enforceTsconfigBaseUrl()
+        await runNpmInstallWithFallback()
+        continue
+      }
+
       const forbidden = await findForbiddenNextDocumentUsage()
       if (forbidden) {
         log(`Forbidden Next.js usage detected before build: ${forbidden}`)

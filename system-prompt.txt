@@ -161,12 +161,19 @@ module.exports = nextConfig
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
+    "baseUrl": ".",
     "plugins": [{"name": "next"}],
     "paths": {"@/*": ["./*"]}
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules"]
 }
+
+CRITICAL IMPORT RULES:
+- DO NOT use non-relative import paths like: "components/Button" or "app/foo" or "lib/bar"
+- Allowed import styles:
+  - Relative: "./...", "../..."
+  - Path alias ONLY with "@/..." (requires baseUrl + paths above)
 
 6. app/layout.tsx - MUST include <html> and <body> tags
 7. app/page.tsx - Your main page component. If it uses React hooks (useState, useEffect, etc.), event handlers, or browser APIs, it MUST start with 'use client' directive on the first line
