@@ -10,22 +10,23 @@ CRITICAL CONSTRAINTS - THESE ARE NON-NEGOTIABLE:
 - Tailwind CSS 3.4.1 (exact version)
 - PostCSS 8.4.35 (exact version)
 - Autoprefixer 10.4.18 (exact version)
-- App Router (app/ directory structure, NOT pages/)
-- Use App Router components (export default function, NOT NextPage)
+- Pages Router (pages/ directory structure, NOT app/)
+- Use Pages Router components (NextPage is allowed, or `export default function` is fine)
 - Port 3000
 - NO databases
 - NO Docker
 - NO Python
 - NO Bun
 - NO external APIs (except what's built into Next.js)
-- NEVER use NextPage or Pages Router syntax
+- Pages Router syntax is REQUIRED
 
 CRITICAL NEXT.JS ROUTER RULES (MUST FOLLOW):
-- This project uses the Next.js App Router (app/ directory). DO NOT use Pages Router features.
-- DO NOT import anything from 'next/document' (Pages Router only).
-- DO NOT use <Html>, <Head>, <Main>, or <NextScript> components (these are only for pages/_document).
-- In App Router, use literal lowercase <html> and <body> tags ONLY inside app/layout.tsx (as specified below).
-- If you need metadata like title/description, use `export const metadata = { ... }` in app/layout.tsx or page components. DO NOT use next/document.
+- This project uses the Next.js Pages Router (pages/ directory). DO NOT use App Router features.
+- DO NOT create an app/ directory.
+- You MAY use `next/document` BUT ONLY inside `pages/_document.tsx` (or .js/.jsx).
+- `pages/_document.tsx` MUST be the only place where <Html>, <Head>, <Main>, <NextScript> appear.
+- Use `pages/_app.tsx` to import global styles and wrap providers.
+- Use `next/head` (NOT next/document) for per-page metadata inside pages.
 
 CRITICAL PACKAGE REQUIREMENTS:
 - Base packages: next, react, react-dom, typescript, tailwindcss, postcss, autoprefixer, @types/react, @types/node
@@ -60,9 +61,10 @@ Response format:
     "tsconfig.json": "...full tsconfig.json content...",
     "tailwind.config.js": "...full tailwind.config.js content...",
     "postcss.config.js": "...full postcss.config.js content...",
-    "app/layout.tsx": "...full layout.tsx content...",
-    "app/page.tsx": "...full page.tsx content...",
-    "app/globals.css": "...full globals.css content..."
+    "pages/_app.tsx": "...full _app.tsx content...",
+    "pages/_document.tsx": "...full _document.tsx content...",
+    "pages/index.tsx": "...full index.tsx content...",
+    "styles/globals.css": "...full globals.css content..."
   }
 }
 
@@ -74,7 +76,7 @@ If the app cannot run with these commands, you have failed.
 IMPLEMENTATION REQUIREMENTS:
 - You MUST implement the FULL functionality described in the user's prompt
 - DO NOT create placeholder pages with "coming soon" or "under construction" messages
-- The app/page.tsx MUST contain the actual working implementation
+- The pages/index.tsx MUST contain the actual working implementation
 - For interactive apps: implement buttons, forms, state management, and event handlers
 - For display apps: implement data fetching, rendering, and UI components
 - For utility apps: implement the core functionality (e.g., file conversion, calculations, etc.)
@@ -175,15 +177,12 @@ CRITICAL IMPORT RULES:
   - Relative: "./...", "../..."
   - Path alias ONLY with "@/..." (requires baseUrl + paths above)
 
-6. app/layout.tsx - MUST include <html> and <body> tags
-7. app/page.tsx - Your main page component. If it uses React hooks (useState, useEffect, etc.), event handlers, or browser APIs, it MUST start with 'use client' directive on the first line
-8. app/globals.css - With Tailwind directives: @tailwind base; @tailwind components; @tailwind utilities;
+6. pages/_app.tsx - MUST import global styles: import '../styles/globals.css'
+7. pages/_document.tsx - MUST include <Html> <Head> <Main> <NextScript> (and ONLY here)
+8. pages/index.tsx - Your main page component
+9. styles/globals.css - With Tailwind directives: @tailwind base; @tailwind components; @tailwind utilities;
 
-CRITICAL: app/page.tsx MUST include 'use client' directive if it uses:
-- useState, useEffect, or any React hooks
-- Event handlers (onClick, onChange, etc.)
-- Browser APIs (window, document, localStorage, etc.)
-- Interactive features
+CRITICAL: In Pages Router you do NOT use 'use client'. All pages are client-capable. Just write normal React components.
 
 Example:
 'use client'
@@ -196,23 +195,11 @@ export default function Page() {
 
 CRITICAL REQUIREMENTS:
 1. The package.json must specify "next": "^14.2.0" (or compatible 14.x version) to work with Node.js 18. Do NOT use Next.js 15 or 16.
-2. app/layout.tsx MUST have this EXACT structure (NO VARIATIONS):
-   import './globals.css';
-   
-   export default function RootLayout({ children }: { children: React.ReactNode }) {
-     return (
-       <html lang="en">
-         <body>{children}</body>
-       </html>
-     );
-   }
-   - The <html> and <body> tags are REQUIRED - the app will fail without them.
-   - DO NOT include <head> tag - Next.js App Router does NOT allow <head> in layout.tsx
-   - DO NOT include <title>, <meta>, or <link> tags in layout.tsx
-   - DO NOT add className to <html> or <body> unless absolutely necessary
-   - DO NOT import or use Tailwind via CDN - it's already configured via globals.css
-   - Keep it minimal: only <html> and <body> with {children} inside
-   - If you need metadata, use the metadata export (but don't add it unless required)
+2. Pages Router required files:
+   - pages/_app.tsx (imports '../styles/globals.css')
+   - pages/_document.tsx (ONLY file allowed to import from 'next/document' and use <Html>/<Head>/<Main>/<NextScript>)
+   - pages/index.tsx (main UI)
+   - styles/globals.css (Tailwind directives)
 
 Do not include README, .gitignore, or any other non-essential files unless explicitly requested.
 

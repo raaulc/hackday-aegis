@@ -232,20 +232,25 @@ export async function POST(request: NextRequest) {
         return null
       }
 
-      return await walk(path.join(appDir, 'app'))
+      if (fs.existsSync(path.join(appDir, 'pages'))) {
+        return await walk(path.join(appDir, 'pages'))
+      }
+      if (fs.existsSync(path.join(appDir, 'app'))) {
+        return await walk(path.join(appDir, 'app'))
+      }
+      return null
     }
 
     const findForbiddenNextDocumentUsage = async (): Promise<string | null> => {
-      // Fast fail for the most common LLM mistake: importing Pages Router _document APIs in App Router.
-      // We scan a small set of high-signal files plus a repo-wide fallback.
-      const candidates = [
-        path.join(appDir, 'app', 'layout.tsx'),
-        path.join(appDir, 'app', 'page.tsx'),
-        path.join(appDir, 'app', 'layout.jsx'),
-        path.join(appDir, 'app', 'page.jsx'),
+      // Pages Router mode:
+      // - next/document is allowed ONLY in pages/_document.(t|j)sx
+      // - <Html>/<Head>/<Main>/<NextScript> are allowed ONLY in pages/_document.(t|j)sx
+      const documentFiles = new Set([
         path.join(appDir, 'pages', '_document.tsx'),
         path.join(appDir, 'pages', '_document.jsx'),
-      ]
+        path.join(appDir, 'pages', '_document.js'),
+        path.join(appDir, 'pages', '_document.ts'),
+      ])
 
       const forbiddenPatterns: Array<{ label: string; re: RegExp }> = [
         { label: "import from 'next/document'", re: /from\s+['"]next\/document['"]/ },
@@ -257,16 +262,12 @@ export async function POST(request: NextRequest) {
 
       const checkContent = (filePath: string, content: string): string | null => {
         for (const p of forbiddenPatterns) {
-          if (p.re.test(content)) return `${p.label} found in ${path.relative(appDir, filePath)}`
+          if (p.re.test(content)) {
+            if (documentFiles.has(filePath)) return null
+            return `${p.label} found outside pages/_document in ${path.relative(appDir, filePath)}`
+          }
         }
         return null
-      }
-
-      for (const filePath of candidates) {
-        if (!fs.existsSync(filePath)) continue
-        const content = await fs.promises.readFile(filePath, 'utf-8').catch(() => '')
-        const hit = checkContent(filePath, content)
-        if (hit) return hit
       }
 
       // Fallback: scan the appDir tree for next/document usage.

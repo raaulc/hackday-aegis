@@ -68,8 +68,8 @@ export class AppBuilder {
     const systemPrompt = await this.readSystemPrompt();
     
     // Enhance the user prompt to emphasize full implementation
-    const enhancedPrompt = errorContext 
-      ? `${userPrompt}\n\nError occurred:\n${errorContext}\n\nIMPORTANT: You must return ALL required files for a complete Next.js app, including package.json, tsconfig.json, next.config.js, tailwind.config.js, postcss.config.js, app/layout.tsx, app/page.tsx, and app/globals.css. Do not return partial files. Return the complete fixed project as a full JSON response with all files.`
+    const enhancedPrompt = errorContext
+      ? `${userPrompt}\n\nError occurred:\n${errorContext}\n\nIMPORTANT: You must return ALL required files for a complete Next.js Pages Router app, including package.json, tsconfig.json, next.config.js, tailwind.config.js, postcss.config.js, pages/_app.tsx, pages/_document.tsx, pages/index.tsx, and styles/globals.css. Do not return partial files. Return the complete fixed project as a full JSON response with all files.`
       : `Build a fully functional Next.js application with the following requirements:\n\n${userPrompt}\n\nIMPORTANT: 
 - Implement the COMPLETE functionality described above - make it ACTUALLY WORK
 - DO NOT create placeholder pages, "coming soon" messages, or mock/fake implementations
