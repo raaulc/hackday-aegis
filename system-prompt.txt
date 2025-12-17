@@ -20,6 +20,13 @@ CRITICAL CONSTRAINTS - THESE ARE NON-NEGOTIABLE:
 - NO external APIs (except what's built into Next.js)
 - NEVER use NextPage or Pages Router syntax
 
+CRITICAL NEXT.JS ROUTER RULES (MUST FOLLOW):
+- This project uses the Next.js App Router (app/ directory). DO NOT use Pages Router features.
+- DO NOT import anything from 'next/document' (Pages Router only).
+- DO NOT use <Html>, <Head>, <Main>, or <NextScript> components (these are only for pages/_document).
+- In App Router, use literal lowercase <html> and <body> tags ONLY inside app/layout.tsx (as specified below).
+- If you need metadata like title/description, use `export const metadata = { ... }` in app/layout.tsx or page components. DO NOT use next/document.
+
 CRITICAL PACKAGE REQUIREMENTS:
 - Base packages: next, react, react-dom, typescript, tailwindcss, postcss, autoprefixer, @types/react, @types/node
 - ALL packages MUST be compatible with React 18 (the project uses React 18.2+)

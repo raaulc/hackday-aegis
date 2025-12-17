@@ -94,6 +94,61 @@ export async function POST(request: NextRequest) {
       return { ok: res.code === 0, output: res.output }
     }
 
+    const findForbiddenNextDocumentUsage = async (): Promise<string | null> => {
+      // Fast fail for the most common LLM mistake: importing Pages Router _document APIs in App Router.
+      // We scan a small set of high-signal files plus a repo-wide fallback.
+      const candidates = [
+        path.join(appDir, 'app', 'layout.tsx'),
+        path.join(appDir, 'app', 'page.tsx'),
+        path.join(appDir, 'app', 'layout.jsx'),
+        path.join(appDir, 'app', 'page.jsx'),
+        path.join(appDir, 'pages', '_document.tsx'),
+        path.join(appDir, 'pages', '_document.jsx'),
+      ]
+
+      const forbiddenPatterns: Array<{ label: string; re: RegExp }> = [
+        { label: "import from 'next/document'", re: /from\s+['"]next\/document['"]/ },
+        { label: '<Html> usage', re: /<\s*Html\b/ },
+        { label: '<Head> usage (next/document)', re: /<\s*Head\b/ },
+        { label: '<Main> usage', re: /<\s*Main\b/ },
+        { label: '<NextScript> usage', re: /<\s*NextScript\b/ },
+      ]
+
+      const checkContent = (filePath: string, content: string): string | null => {
+        for (const p of forbiddenPatterns) {
+          if (p.re.test(content)) return `${p.label} found in ${path.relative(appDir, filePath)}`
+        }
+        return null
+      }
+
+      for (const filePath of candidates) {
+        if (!fs.existsSync(filePath)) continue
+        const content = await fs.promises.readFile(filePath, 'utf-8').catch(() => '')
+        const hit = checkContent(filePath, content)
+        if (hit) return hit
+      }
+
+      // Fallback: scan the appDir tree for next/document usage.
+      const walk = async (dir: string): Promise<string | null> => {
+        const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])
+        for (const ent of entries) {
+          if (ent.name === 'node_modules' || ent.name === '.next') continue
+          const full = path.join(dir, ent.name)
+          if (ent.isDirectory()) {
+            const found = await walk(full)
+            if (found) return found
+          } else if (/\.(ts|tsx|js|jsx|mdx)$/.test(ent.name)) {
+            const content = await fs.promises.readFile(full, 'utf-8').catch(() => '')
+            const hit = checkContent(full, content)
+            if (hit) return hit
+          }
+        }
+        return null
+      }
+
+      return await walk(appDir)
+    }
+
     const maybeAutoRepair = async (errorContext: string): Promise<boolean> => {
       if (!prompt) return false
       const apiKey = process.env.OPENAI_API_KEY
@@ -112,6 +167,39 @@ export async function POST(request: NextRequest) {
     // Strict compile gate with up to 2 auto-repair attempts
     const MAX_REPAIR_ATTEMPTS = 2
     for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
+      const forbidden = await findForbiddenNextDocumentUsage()
+      if (forbidden) {
+        log(`Forbidden Next.js usage detected before build: ${forbidden}`)
+        if (attempt === MAX_REPAIR_ATTEMPTS) {
+          return NextResponse.json(
+            {
+              error: `Forbidden Next.js usage detected: ${forbidden}`,
+              logs: logs.join('\n'),
+              suggestion:
+                "Remove any use of next/document or <Html>/<Head>/<Main>/<NextScript>. This project uses App Router; only use lowercase <html>/<body> in app/layout.tsx.",
+            },
+            { status: 500 }
+          )
+        }
+
+        const repaired = await maybeAutoRepair(
+          `FORBIDDEN NEXT.JS USAGE DETECTED: ${forbidden}\n\nThis project uses Next.js App Router (app/). You MUST remove all imports from 'next/document' and remove any usage of <Html>, <Head>, <Main>, <NextScript> components.\n\nFix the project and return the full corrected JSON with ALL required files.`
+        )
+        if (!repaired) {
+          return NextResponse.json(
+            {
+              error: 'Forbidden Next.js usage detected and auto-repair was not possible (missing prompt or OPENAI_API_KEY)',
+              logs: logs.join('\n'),
+              suggestion:
+                "Provide the prompt to /api/build-app and ensure OPENAI_API_KEY is configured so auto-repair can run.",
+            },
+            { status: 500 }
+          )
+        }
+        await runNpmInstallWithFallback()
+        continue
+      }
+
       const buildRes = await runCompileGate()
       if (buildRes.ok) {
         log('Compile gate passed (next build succeeded)')
