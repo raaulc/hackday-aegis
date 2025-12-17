@@ -150,6 +150,19 @@ export async function POST(request: NextRequest) {
         return
       }
 
+      // If npm install fails due to a non-existent package version, try auto-repair (fix package.json)
+      if (first.output.includes('npm ERR! notarget') || first.output.includes('No matching version found for')) {
+        log('Detected npm ETARGET/notarget (non-existent package version).')
+        const repaired = await maybeAutoRepair(
+          `npm install failed due to a non-existent package version (ETARGET/notarget). Fix package.json by using ONLY real, published npm package versions.\n\nFull npm output:\n\n${first.output}`
+        )
+        if (repaired) {
+          await cleanGeneratedAppBuildState('npm ETARGET/notarget; repaired package.json')
+          await runNpmInstallWithFallback()
+          return
+        }
+      }
+
       if (looksLikeCorruptInstall(first.output)) {
         await cleanGeneratedAppBuildState(`${label} appears corrupted`)
         log(`Retrying ${label} after cleaning...`)
@@ -170,6 +183,17 @@ export async function POST(request: NextRequest) {
           log('npm install completed successfully (with --legacy-peer-deps)')
           await fs.promises.writeFile(lastHashPath, desiredHash).catch(() => {})
           return
+        }
+        if (second.output.includes('npm ERR! notarget') || second.output.includes('No matching version found for')) {
+          log('Detected npm ETARGET/notarget after --legacy-peer-deps.')
+          const repaired = await maybeAutoRepair(
+            `npm install --legacy-peer-deps failed due to a non-existent package version (ETARGET/notarget). Fix package.json by using ONLY real, published npm package versions.\n\nFull npm output:\n\n${second.output}`
+          )
+          if (repaired) {
+            await cleanGeneratedAppBuildState('npm ETARGET/notarget; repaired package.json')
+            await runNpmInstallWithFallback()
+            return
+          }
         }
         if (looksLikeCorruptInstall(second.output)) {
           await cleanGeneratedAppBuildState('npm install fallback appears corrupted')
@@ -208,15 +232,25 @@ export async function POST(request: NextRequest) {
     }
 
     const findForbiddenNonRelativeImports = async (): Promise<string | null> => {
-      // Disallow imports like "components/X" unless using the "@/..." alias.
+      // For Vite apps, bare npm imports are allowed (including scoped packages like "@faker-js/faker").
+      // We only want to prevent "absolute local" imports like "components/X" or "src/foo" that should be relative or "@/...".
       const importRe = /from\s+['"]([^'"]+)['"]/g
       const isBad = (spec: string) => {
         if (spec.startsWith('.') || spec.startsWith('@/')) return false
-        // No Next.js in Vite apps
-        if (spec.startsWith('react') || spec.startsWith('tailwindcss')) return false
-        // Packages (e.g. "zod") are fine; bad ones usually look like "components/..." or "app/..."
-        // Treat any path-like (contains "/") as forbidden unless "@/..." or relative.
-        return spec.includes('/')
+        // Anything that looks like a "local absolute path" should be blocked
+        const badPrefixes = [
+          'components/',
+          'component/',
+          'src/',
+          'app/',
+          'pages/',
+          'lib/',
+          'utils/',
+          'hooks/',
+          'styles/',
+          'assets/',
+        ]
+        return badPrefixes.some((p) => spec.startsWith(p))
       }
 
       const walk = async (dir: string): Promise<string | null> => {
