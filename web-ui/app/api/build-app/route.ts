@@ -32,6 +32,24 @@ export async function POST(request: NextRequest) {
     const appDir = path.join(process.cwd(), '..', 'generated-app')
     log(`App directory: ${appDir}`)
 
+    // Single-flight lock: prevent concurrent builds/installations in the same generated-app folder.
+    const lockPath = path.join(appDir, '.build.lock')
+    let lockFd: fs.promises.FileHandle | null = null
+    try {
+      lockFd = await fs.promises.open(lockPath, 'wx')
+      await lockFd.writeFile(`${process.pid} ${new Date().toISOString()}\n`)
+      log(`Acquired build lock: ${lockPath}`)
+    } catch (e: any) {
+      log(`ERROR: Build already in progress (lock exists): ${lockPath}`)
+      return NextResponse.json(
+        {
+          error: 'Build already in progress. Please wait for the current build to finish and try again.',
+          logs: logs.join('\n'),
+        },
+        { status: 409 }
+      )
+    }
+
     if (!fs.existsSync(appDir)) {
       log(`ERROR: App directory does not exist: ${appDir}`)
       return NextResponse.json(
@@ -70,22 +88,89 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    const looksLikeCorruptInstall = (output: string) => {
+      const signals = [
+        'TAR_ENTRY_ERROR',
+        'ENOENT: no such file or directory, open',
+        'Cannot find module',
+        '@swc/helpers',
+        'caniuse-lite/dist/unpacker/agents',
+      ]
+      return signals.some((s) => output.includes(s))
+    }
+
+    const cleanGeneratedAppBuildState = async (reason: string) => {
+      log(`Cleaning generated-app build state due to: ${reason}`)
+      // Remove build output cache
+      await fs.promises.rm(path.join(appDir, '.next'), { recursive: true, force: true }).catch(() => {})
+      // If install is corrupted, wipe node_modules (and lockfile if present to allow a full refresh)
+      await fs.promises.rm(path.join(appDir, 'node_modules'), { recursive: true, force: true }).catch(() => {})
+      await fs.promises.rm(path.join(appDir, 'package-lock.json'), { force: true }).catch(() => {})
+      await fs.promises.rm(path.join(appDir, '.install.hash'), { force: true }).catch(() => {})
+    }
+
+    const computeInstallHash = async (): Promise<string> => {
+      const pkgPath = path.join(appDir, 'package.json')
+      const lockPath = path.join(appDir, 'package-lock.json')
+      const pkg = await fs.promises.readFile(pkgPath, 'utf-8').catch(() => '')
+      const lock = await fs.promises.readFile(lockPath, 'utf-8').catch(() => '')
+      // Lightweight stable hash without crypto dependency
+      const data = `${pkg}\n---\n${lock}`
+      let h = 0
+      for (let i = 0; i < data.length; i++) h = (h * 31 + data.charCodeAt(i)) >>> 0
+      return String(h)
+    }
+
     const runNpmInstallWithFallback = async (): Promise<void> => {
-      log('Running npm install...')
-      const first = await runNpm(['install'], 'npm install')
+      const desiredHash = await computeInstallHash()
+      const lastHashPath = path.join(appDir, '.install.hash')
+      const lastHash = await fs.promises.readFile(lastHashPath, 'utf-8').catch(() => '')
+
+      if (lastHash.trim() === desiredHash && fs.existsSync(path.join(appDir, 'node_modules'))) {
+        log('Dependencies unchanged; skipping install')
+        return
+      }
+
+      const hasLock = fs.existsSync(path.join(appDir, 'package-lock.json'))
+      const installCmd = hasLock ? ['ci'] : ['install']
+      const label = hasLock ? 'npm ci' : 'npm install'
+
+      log(`Running ${label}...`)
+      const first = await runNpm(installCmd, label)
       if (first.code === 0) {
-        log('npm install completed successfully')
+        log(`${label} completed successfully`)
+        await fs.promises.writeFile(lastHashPath, desiredHash).catch(() => {})
         return
       }
 
-      log('Regular npm install failed, trying with --legacy-peer-deps...')
-      const second = await runNpm(['install', '--legacy-peer-deps'], 'npm install --legacy-peer-deps')
-      if (second.code === 0) {
-        log('npm install completed successfully (with --legacy-peer-deps)')
-        return
+      if (looksLikeCorruptInstall(first.output)) {
+        await cleanGeneratedAppBuildState(`${label} appears corrupted`)
+        log(`Retrying ${label} after cleaning...`)
+        const retry = await runNpm(installCmd, `${label} (retry)`)
+        if (retry.code === 0) {
+          log(`${label} completed successfully after cleaning`)
+          await fs.promises.writeFile(lastHashPath, desiredHash).catch(() => {})
+          return
+        }
+        throw new Error(`${label} failed even after cleaning.\n\n${retry.output}`)
       }
 
-      throw new Error(`npm install failed.\n\n${second.output || first.output}`)
+      // Fallback for peer deps conflicts (only for npm install)
+      if (!hasLock) {
+        log('Regular npm install failed, trying with --legacy-peer-deps...')
+        const second = await runNpm(['install', '--legacy-peer-deps'], 'npm install --legacy-peer-deps')
+        if (second.code === 0) {
+          log('npm install completed successfully (with --legacy-peer-deps)')
+          await fs.promises.writeFile(lastHashPath, desiredHash).catch(() => {})
+          return
+        }
+        if (looksLikeCorruptInstall(second.output)) {
+          await cleanGeneratedAppBuildState('npm install fallback appears corrupted')
+        }
+        throw new Error(`npm install failed.\n\n${second.output || first.output}`)
+      }
+
+      throw new Error(`${label} failed.\n\n${first.output}`)
     }
 
     const runCompileGate = async (): Promise<{ ok: boolean; output: string }> => {
@@ -204,6 +289,12 @@ export async function POST(request: NextRequest) {
       if (buildRes.ok) {
         log('Compile gate passed (next build succeeded)')
         break
+      }
+
+      if (looksLikeCorruptInstall(buildRes.output)) {
+        await cleanGeneratedAppBuildState('next build indicates missing/corrupt dependencies')
+        await runNpmInstallWithFallback()
+        continue
       }
 
       const attemptLabel = attempt === 0 ? 'initial build' : `repair attempt ${attempt}`
@@ -450,6 +541,16 @@ export async function POST(request: NextRequest) {
       },
       { status: 500 }
     )
+  } finally {
+    // Release lock
+    try {
+      const appDir = path.join(process.cwd(), '..', 'generated-app')
+      const lockPath = path.join(appDir, '.build.lock')
+      await fs.promises.rm(lockPath, { force: true }).catch(() => {})
+    } catch {
+      // ignore
+    }
   }
 }
+
 
