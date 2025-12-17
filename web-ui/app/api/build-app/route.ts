@@ -92,11 +92,17 @@ export async function POST(request: NextRequest) {
       const signals = [
         'TAR_ENTRY_ERROR',
         'ENOENT: no such file or directory, open',
-        'Cannot find module',
         '@swc/helpers',
         'caniuse-lite/dist/unpacker/agents',
       ]
       return signals.some((s) => output.includes(s))
+    }
+
+    const looksLikeMissingVitePluginReact = (output: string) => {
+      return (
+        output.includes("Cannot find module '@vitejs/plugin-react'") ||
+        output.includes('Cannot find module "@vitejs/plugin-react"')
+      )
     }
 
     const cleanGeneratedAppBuildState = async (reason: string) => {
@@ -365,12 +371,44 @@ export async function POST(request: NextRequest) {
 
       const buildRes = await runCompileGate()
       if (buildRes.ok) {
-        log('Compile gate passed (next build succeeded)')
+        log('Compile gate passed (vite build succeeded)')
         break
       }
 
+      // Common Vite generation mistake: vite.config imports @vitejs/plugin-react but package.json doesn't include it.
+      if (looksLikeMissingVitePluginReact(buildRes.output)) {
+        log("Detected missing dependency: @vitejs/plugin-react")
+        if (attempt === MAX_REPAIR_ATTEMPTS) {
+          return NextResponse.json(
+            {
+              error: "Compile gate failed: missing dependency '@vitejs/plugin-react'",
+              logs: logs.join('\n'),
+              stderr: buildRes.output,
+              suggestion:
+                "Ensure generated-app/package.json includes devDependency '@vitejs/plugin-react' and then reinstall dependencies.",
+            },
+            { status: 500 }
+          )
+        }
+        const repaired = await maybeAutoRepair(
+          `vite build failed because vite.config.ts imports @vitejs/plugin-react but it is missing from package.json.\n\nFix by adding "@vitejs/plugin-react" to devDependencies and ensuring vite.config.ts uses it correctly.\n\nFull output:\n\n${buildRes.output}`
+        )
+        if (!repaired) {
+          return NextResponse.json(
+            {
+              error: "Compile gate failed and auto-repair was not possible (missing prompt or OPENAI_API_KEY)",
+              logs: logs.join('\n'),
+              stderr: buildRes.output,
+            },
+            { status: 500 }
+          )
+        }
+        await runNpmInstallWithFallback()
+        continue
+      }
+
       if (looksLikeCorruptInstall(buildRes.output)) {
-        await cleanGeneratedAppBuildState('next build indicates missing/corrupt dependencies')
+        await cleanGeneratedAppBuildState('vite build indicates missing/corrupt dependencies')
         await runNpmInstallWithFallback()
         continue
       }
@@ -381,17 +419,17 @@ export async function POST(request: NextRequest) {
       if (attempt === MAX_REPAIR_ATTEMPTS) {
         return NextResponse.json(
           {
-            error: 'Compile gate failed: next build did not succeed',
+            error: 'Compile gate failed: vite build did not succeed',
             logs: logs.join('\n'),
             stderr: buildRes.output,
-            suggestion: 'The generated app has a compile error. Try regenerating or inspect generated-app/app/page.tsx around the reported line.',
+            suggestion: 'The generated app has a compile error. Try regenerating or inspect generated-app/src/App.tsx (and other referenced files) around the reported line.',
           },
           { status: 500 }
         )
       }
 
       const repaired = await maybeAutoRepair(
-        `next build failed (attempt ${attempt + 1}/${MAX_REPAIR_ATTEMPTS}). Here is the full output:\n\n${buildRes.output}`
+        `vite build failed (attempt ${attempt + 1}/${MAX_REPAIR_ATTEMPTS}). Here is the full output:\n\n${buildRes.output}`
       )
       if (!repaired) {
         // If we can't repair (missing prompt or API key), fail immediately

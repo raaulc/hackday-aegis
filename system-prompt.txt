@@ -20,7 +20,7 @@ CRITICAL CONSTRAINTS - THESE ARE NON-NEGOTIABLE:
 - DO NOT use React Router unless requested (single-page apps are fine)
 
 CRITICAL PACKAGE REQUIREMENTS:
-- Base packages: react, react-dom, vite, typescript, tailwindcss, postcss, autoprefixer, @types/react, @types/react-dom
+- Base packages: react, react-dom, vite, @vitejs/plugin-react, typescript, tailwindcss, postcss, autoprefixer, @types/react, @types/react-dom
 - ALL packages MUST be compatible with React 18 (the project uses React 18.2+)
 - DO NOT use packages with peer dependency conflicts
 - You MAY add essential, well-known npm packages when browser APIs are insufficient for the required functionality
@@ -104,6 +104,7 @@ Generate ONLY the files needed for a minimal working app. Include:
   },
   "devDependencies": {
     "vite": "^5.0.0",
+    "@vitejs/plugin-react": "^4.2.0",
     "typescript": "^5.3.3",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
