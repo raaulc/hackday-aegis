@@ -1,0 +1,38 @@
+{
+  "name": "local-ai-builder",
+  "version": "1.0.0",
+  "description": "Local AI app builder - a Replit-lite that generates and runs Next.js apps",
+  "main": "runner.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx runner.ts",
+    "dev": "tsx runner.ts",
+    "web-ui": "cd web-ui && npm install && npm run dev"
+  },
+  "bin": {
+    "ai-app": "./dist/runner.js"
+  },
+  "keywords": [
+    "ai",
+    "code-generation",
+    "nextjs",
+    "local"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "openai": "^4.20.0",
+    "open": "^10.1.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+

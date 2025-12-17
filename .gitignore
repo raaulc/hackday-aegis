@@ -1,0 +1,15 @@
+node_modules/
+dist/
+generated-app/
+.env
+*.log
+.DS_Store
+
+
+# Ignore Next.js build output
+.next/
+**/.next/
+
+# Ignore local env files
+.env.local
+web-ui/.env.local
